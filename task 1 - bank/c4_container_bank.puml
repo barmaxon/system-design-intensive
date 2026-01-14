@@ -1,0 +1,101 @@
+@startuml C4_Context_PaymentPlatform
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title C4 Context Diagram - Платёжная вертикаль банка
+
+Person(client, "Клиент банка")
+Person(merchant, "Мерчант")
+
+System_Boundary(payment_platform, "Платёжная платформа банка") {
+    Container(bff_m, "BFF Mobile", "Go", "Трансформация запросов, оптимизации")
+    Container(bff_w, "Bff Web", "Go", "Трансформация запросов, оптимизации")
+    Container(api, "API Gateway", "Go", "Авторизация, аутентификация, маршрутизация и т.д.")
+    Container(users, "Users", "Go", "Данные о клиентах: персональные, договора")
+    Container(notif, "Notifications", "Go", "Принимает запросы на уведомления и публикует")
+    Container(payments, "Payments", "Go", "Обработка платежей")
+    Container(wallet, "Wallet", "Go", "Управление средствами клиентов")
+    Container(afc, "Anti-Fraud / Scoring", "Go", "Проверки платежей, оценка рисков")
+    Container(core, "Core адаптер(ACL)", "Go", "Интеграция с легаси")
+    Container(analytics, "Аналитика, генерация отчетов", "Go", "Analytics")
+    ContainerQueue(kafka, "Kafka Cluster", "Kafka", "afc.*, notification.*, payments.*")
+    ContainerQueue(rabbit, "RabbitMQ", "RabbitMQ")
+
+    ContainerDb(db_w, "Wallet DB", "PostgreSQL/Redis", "счета клиентов (балансы, открыты\закрыты)")
+    ContainerDb(db_p, "Payments DB", "PostgreSQL/Redis", "Платежи\переводы")
+    ContainerDb(db_u, "Users DB", "PostgreSQL/Redis", "Клиенты")
+    ContainerDb(db_n, "Notifications DB", "PostgreSQL/Redis")
+    ContainerDb(db_a, "Analytics DB", "ClickHouse")
+}
+
+System_Ext(core_banking, "Core Banking (Legacy)", "Бухгалтерский контур, хранилище проводок")
+System_Ext(payment_provider, "Payment Provider", "Эквайринг, СБП, карточный процессинг")
+System_Ext(smtp, "Внешние сервисы уведомлений", "Отправка email/sms/push уведомлений")
+
+Rel(client, bff_m, "Подтверждает платежи, совершает переводы, проверяет баланс, запрашивает\скачивает отчеты", "HTTPS/REST")
+Rel(client, bff_w, "")
+
+'Тут не уверен че ему приписать по действиям, я ж не расписываю все взаимодействие как в реале с личным кабинетом мерчантов
+Rel(merchant, bff_w, "", "HTTPS/REST")
+
+Rel(bff_m, api, "", "grpc")
+Rel(bff_w, api, "", "grpc")
+
+'eventual consitency: генерация отчетов, уведомления, аналитика, обработка платежа
+'sync consistency: резерв баланса, интеграция с легаси корой, запрос данных о пользователе,
+'запросы от клиента и форвард от BFF на gateway,
+'отправка уведомлений через сторонние сервисы
+
+'синхронно т.к. нужны сразу данные по запросу
+Rel(api, users, "Запрос данных юзера, проверка пароля", "grpc")
+
+'асинхронно, много запросов будет дольше задержка, лучше подождет смс\пуш
+Rel_R(api, kafka, "События запроса авторизации, подтверждение входа", "notifications.auth_events")
+
+'синхронно т.к. надо сразу выдать ответ по запросу
+Rel(api, payments, "Запрос на платеж\перевод", "grpc")
+
+'синхронно т.к. надо сразу выдать ответ по запросу, без этого платеж\перевод не пускаем
+Rel(payments, afc, "Подтверждение и предварительная проверка платежа", "grpc")
+
+'асинхронно, т.к полные проверки слишком долгие, лучше если че отменим потом
+Rel(afc, kafka, "Отправка завершенных платежей (после всех проверок и обработок), Откат платежей, не прошедших основные проверки", "payments.completed, afc.payment_cancels")
+Rel(kafka, payments, "consume", "afc.payment_cancels")
+
+'синхр, без проверки баланса никак
+Rel(payments, wallet, "Запросы на списание, пополнение и т.д.", "grpc")
+
+'синхр, без подтверждения сразу никуда
+Rel(payments, payment_provider, "Отправляет платежи на процессинг", "HTTPS")
+
+'синхр, без подтверждения у легаси никуда
+Rel(core, core_banking, "Проводит операции по счетам", "HTTPS")
+Rel_U(payments, core, "Обработка платежа в легаси коре", "grpc")
+
+'асинхр, аналитка дело неспешное, собираем постепенно пачками
+Rel(kafka, analytics, "consume", "payments.completed")
+
+'асинхр, отчеты долго делаются, подождут
+Rel(api, rabbit, "Отправка задач на генерацию отчетов", "clients.reports_tasks")
+Rel(rabbit, analytics, "push", "clients.reports_tasks")
+
+'асинхр, как сделали так и отправим уведомление
+Rel(analytics, kafka, "Отправка события о готовности отчета", "clients.reports_done")
+Rel(kafka, notif, "Чтение событий", "notifications.auth_events, clients.reports_done")
+
+Rel(analytics, db_a, "read/write исторических данных по платежам")
+Rel(notif, db_n, "read/write")
+Rel_D(wallet, db_w, "read/write")
+Rel_D(payments, db_p, "read/write")
+Rel_U(afc, db_p, "read/write")
+Rel(users, db_u, "read/write")
+
+Rel(notif, smtp, "Отправляет уведомления", "SMTP/HTTPS")
+
+skinparam legendBackgroundColor #999
+skinparam legendFontColor #000
+legend top
+
+    **Термины**
+    AFL = Anti-Fraud / Scoring
+end legend
+@enduml

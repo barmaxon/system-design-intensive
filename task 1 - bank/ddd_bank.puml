@@ -1,0 +1,31 @@
+@startuml
+skinparam rectangle {
+    BackgroundColor<<context>> #lightblue
+    BorderColor<<context>> #1168bd
+}
+
+rectangle "Payment" <<context>> as payment
+rectangle "Wallet" <<context>> as wallet
+rectangle "AFS" <<context>> as afs
+rectangle "Core" <<context>> as core
+rectangle "Customer" <<context>> as customer
+rectangle "Notification" <<context>> as notification
+
+payment <-right-> afs : "Partnership"
+payment <-left- core : "ACL"
+wallet -down-> payment : "OHS"
+notification -down-> payment : "PL"
+notification -right-> wallet : "PL"
+customer -down-> payment : "OHS"
+afs -up-> wallet : "OHS"
+
+legend top
+  **Relations**
+  OHS = Open Host Service
+  PL = Published Language
+  ACL = Anti-Corruption Layer
+
+  **Services**
+  AFL = Anti-Fraud / Scoring
+end legend
+@enduml
